@@ -21,9 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- VM Endpoints from Render Environment ---
+# --- Cloud VM Endpoint ---
 YOLO_YIELD_VM_URL = os.getenv("YOLO_API_URL") 
-LLM_VM_URL = os.getenv("LLM_API_URL")        
 
 # Mount static files to serve the website
 app.mount("/static", StaticFiles(directory="static"), name="static")
