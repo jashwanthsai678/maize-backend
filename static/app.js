@@ -48,13 +48,14 @@ form.addEventListener('submit', async (e) => {
     formData.append("weather_json", JSON.stringify(window.weatherData));
 
     try {
-        // We call the Orchestrator on Render
-        const response = await fetch('/orchestrate', {
+        // DIRECT CONNECTION to cloud VM as requested
+        // Note: This bypasses the Render orchestrator to fix connection issues.
+        const response = await fetch('http://34.14.178.187:8000/process_all', {
             method: 'POST',
             body: formData
         });
 
-        if (!response.ok) throw new Error('Orchestration failed');
+        if (!response.ok) throw new Error('Cloud VM connection failed');
 
         const data = await response.json();
 
