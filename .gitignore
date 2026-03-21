@@ -1,0 +1,9 @@
+.env
+__pycache__/
+# Models are now required for the combined API
+# *.joblib
+*.csv
+.venv/
+node_modules/
+dist/
+.DS_Store
