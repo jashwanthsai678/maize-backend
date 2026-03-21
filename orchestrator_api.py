@@ -72,71 +72,64 @@ async def orchestrate_advisory(
     weather_json: str = Form("{}")
 ):
     start_time = time.time()
-    logger.info(f"--- Multi-VM Orchestration Start ---")
+    logger.info(f"--- Direct Request to LLM VM at {LLM_VM_URL} ---")
     
     try:
         image_bytes = await image.read()
         
-        # STEP 1: Call VM 1 for Diagnosis and Yield
-        logger.info(f"Step 1: Calling VM 1 at {YOLO_YIELD_VM_URL}")
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            vm1_data = {
-                "district": district,
-                "season": season,
-                "crop_year": crop_year,
-                "area_ha": area_ha,
-                "growth_stage": growth_stage,
-                "language": language,
-                "weather_json": weather_json
-            }
-            files = {"image": (image.filename, image_bytes, image.content_type)}
-            
-            vm1_resp = await client.post(YOLO_YIELD_VM_URL, data=vm1_data, files=files)
-            if vm1_resp.status_code != 200:
-                logger.error(f"VM 1 Error: {vm1_resp.text}")
-                raise HTTPException(status_code=vm1_resp.status_code, detail=f"VM 1 (Diagnosis) Error: {vm1_resp.text}")
-            
-            vm1_result = vm1_resp.json()
-            logger.info("Step 1 Complete: Diagnosis received.")
-
-        # STEP 2: Call VM 2 for Qwen Advisory
-        logger.info(f"Step 2: Calling VM 2 at {LLM_VM_URL}")
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # We send JSON to the /advisory endpoint as expected
             llm_payload = {
                 "crop": "Maize",
                 "growth_stage": growth_stage,
                 "district": district,
                 "season": season,
-                "diagnosis": vm1_result.get("detected_pest", "Healthy"),
-                "confidence": vm1_result.get("detection_confidence", 0.0),
-                "severity": vm1_result.get("severity", "Moderate"),
-                "expected_yield": f"{vm1_result.get('yield_prediction', 0):.2f} t/ha",
+                "diagnosis": "Direct Advisory Request",
+                "confidence": 1.0,
+                "severity": "Info",
+                "expected_yield": "N/A",
                 "language": language
             }
             
-            llm_resp = await client.post(LLM_VM_URL, json=llm_payload)
-            if llm_resp.status_code != 200:
-                 logger.warning(f"VM 2 failed, using fallback advisory.")
-                 advisory_text = "Qwen Advisory is currently unavailable. Please refer to the diagnosis and yield results."
-            else:
-                 llm_result = llm_resp.json()
-                 advisory_text = llm_result.get("advisory", "No advisory available.")
-            logger.info("Step 2 Complete: Advisory received.")
-
-        # Final Aggregation
-        duration = time.time() - start_time
-        logger.info(f"Orchestration completed in {duration:.2f}s")
-        
-        return {
-            "detected_pest": vm1_result.get("detected_pest", "Unknown"),
-            "detection_confidence": vm1_result.get("detection_confidence", 0.0),
-            "yield_prediction": vm1_result.get("yield_prediction", 0.0),
-            "severity": vm1_result.get("severity", "Moderate"),
-            "advisory": advisory_text,
-            "visual_diagnosis": {
-                "annotated_image_base64": vm1_result.get("annotated_image_base64", ""),
+            try:
+                resp = await client.post(LLM_VM_URL, json=llm_payload)
+            except httpx.ConnectError:
+                raise HTTPException(status_code=503, detail="Cloud VM unreachable. Check Firewall/Port 8000 on 34.10.208.65.")
+            except httpx.TimeoutException:
+                raise HTTPException(status_code=504, detail="VM Timeout. The processing took too long.")
+            
+            if resp.status_code == 422:
+                # If JSON fails, the user might have updated the endpoint to accept form data (image+metadata). Let's try it as fallback.
+                logger.warning("VM returned 422 for JSON. Falling back to Multipart Form Data.")
+                vm_data = {
+                    "district": district,
+                    "season": season,
+                    "crop_year": str(crop_year),
+                    "area_ha": str(area_ha),
+                    "growth_stage": growth_stage,
+                    "language": language,
+                    "weather_json": weather_json
+                }
+                files = {"image": (image.filename, image_bytes, image.content_type)}
+                resp = await client.post(LLM_VM_URL, data=vm_data, files=files)
+                
+            if resp.status_code != 200:
+                logger.error(f"VM Error ({resp.status_code}): {resp.text}")
+                raise HTTPException(status_code=resp.status_code, detail=f"VM Error: {resp.text}")
+            
+            llm_result = resp.json()
+            
+            # If the VM returns the full struct (detected_pest, yield_prediction), use it. Else fallback to defaults.
+            return {
+                "detected_pest": llm_result.get("detected_pest", "Direct Request"),
+                "detection_confidence": llm_result.get("detection_confidence", 100.0),
+                "yield_prediction": llm_result.get("yield_prediction", 0.0),
+                "severity": llm_result.get("severity", "Moderate"),
+                "advisory": llm_result.get("advisory", str(llm_result)),
+                "visual_diagnosis": {
+                    "annotated_image_base64": llm_result.get("annotated_image_base64", ""),
+                }
             }
-        }
 
     except Exception as e:
         logger.error(f"ORCHESTRATION EXCEPTION: {str(e)}")
