@@ -111,8 +111,8 @@ form.addEventListener('submit', async (e) => {
         }
 
     } catch (err) {
-        console.error(err);
-        alert("Error connecting to the AI System. Please check if VM 1 and VM 2 are running.");
+        console.error('Fetch Error:', err);
+        alert("Error connecting to the AI System. Please ensure the Render service is fully deployed and the Cloud VMs are running.");
     } finally {
         submitBtn.disabled = false;
         document.querySelector('.spinner').style.display = 'none';
@@ -122,9 +122,16 @@ form.addEventListener('submit', async (e) => {
 
 // Accordion Toggle Logic
 document.getElementById('context-toggle').onclick = function() {
-    const content = document.getElementById('context-content');
-    content.classList.toggle('active');
+    const accordion = this.closest('.accordion');
+    accordion.classList.toggle('active');
+    
     // Rotate the arrow icon if it exists
     const icon = this.querySelector('i.fa-chevron-down');
-    if (icon) icon.classList.toggle('rotate');
+    if (icon) {
+        if (accordion.classList.contains('active')) {
+            icon.style.transform = 'rotate(180deg)';
+        } else {
+            icon.style.transform = 'rotate(0deg)';
+        }
+    }
 };
