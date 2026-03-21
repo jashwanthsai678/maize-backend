@@ -131,7 +131,8 @@ async def orchestrate_advisory(
     crop_year: int = Form(1997),
     area_ha: float = Form(948.0),
     growth_stage: str = Form("vegetative"),
-    language: str = Form("english")
+    language: str = Form("english"),
+    weather_json: str = Form("{}")
 ):
     try:
         # 1. Prepare Metadata for underlying services
@@ -145,16 +146,21 @@ async def orchestrate_advisory(
             "crop_type": "maize"
         }
         
-        # Add basic weather data if needed (usually from frontend, but we can mock/fetch here)
-        # For now, we'll use a snapshot or defaults
-        meta_dict.update({
-            "T2M": [24.8, 25.0, 23.7, 24.1],
-            "T2M_MAX": [28.8, 29.1, 27.5, 28.2],
-            "T2M_MIN": [20.9, 21.3, 19.8, 20.0],
-            "PRECTOTCORR": [0.0, 0.0, 5.5, 12.0],
-            "RH2M": [83.1, 82.5, 84.0, 85.2],
-            "ALLSKY_SFC_SW_DWN": [16.5, 16.9, 15.8, 16.0]
-        })
+        # 1a. Merge Weather Data from Frontend
+        try:
+            weather = json.loads(weather_json)
+            meta_dict.update(weather)
+        except Exception as e:
+            print(f"Weather parsing warning: {e}")
+            # Fallback to snapshop if frontend data is corrupt/missing
+            meta_dict.update({
+                "T2M": [24.8, 25.0, 23.7, 24.1],
+                "T2M_MAX": [28.8, 29.1, 27.5, 28.2],
+                "T2M_MIN": [20.9, 21.3, 19.8, 20.0],
+                "PRECTOTCORR": [0.0, 0.0, 5.5, 12.0],
+                "RH2M": [83.1, 82.5, 84.0, 85.2],
+                "ALLSKY_SFC_SW_DWN": [16.5, 16.9, 15.8, 16.0]
+            })
 
         # Read image bytes
         image_bytes = await image.read()
