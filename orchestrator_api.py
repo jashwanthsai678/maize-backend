@@ -21,8 +21,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- VM Endpoints from .env ---
-# YOLO_API_URL should point to the VM that handles BOTH YOLO and Yield
+# --- VM Endpoints from Render Environment ---
 YOLO_YIELD_VM_URL = os.getenv("YOLO_API_URL") 
 LLM_VM_URL = os.getenv("LLM_API_URL")        
 
