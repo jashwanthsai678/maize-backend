@@ -126,24 +126,42 @@ async def get_llm_advisory(payload: dict) -> dict:
 @app.post("/orchestrate")
 async def orchestrate_advisory(
     image: UploadFile = File(...),
-    metadata: str = Form(...)
+    district: str = Form("Anugul"),
+    season: str = Form("Kharif"),
+    crop_year: int = Form(1997),
+    area_ha: float = Form(948.0),
+    growth_stage: str = Form("vegetative"),
+    language: str = Form("english")
 ):
     try:
-        # 1. Parse Metadata
-        try:
-            meta_dict = json.loads(metadata)
-            meta = YieldMetadata(**meta_dict)
-        except ValidationError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid metadata format: {e.errors()}")
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Metadata must be valid JSON")
+        # 1. Prepare Metadata for underlying services
+        meta_dict = {
+            "district_std": district,
+            "season": season,
+            "crop_year": crop_year,
+            "area_ha": area_ha,
+            "growth_stage": growth_stage,
+            "language": language,
+            "crop_type": "maize"
+        }
+        
+        # Add basic weather data if needed (usually from frontend, but we can mock/fetch here)
+        # For now, we'll use a snapshot or defaults
+        meta_dict.update({
+            "T2M": [24.8, 25.0, 23.7, 24.1],
+            "T2M_MAX": [28.8, 29.1, 27.5, 28.2],
+            "T2M_MIN": [20.9, 21.3, 19.8, 20.0],
+            "PRECTOTCORR": [0.0, 0.0, 5.5, 12.0],
+            "RH2M": [83.1, 82.5, 84.0, 85.2],
+            "ALLSKY_SFC_SW_DWN": [16.5, 16.9, 15.8, 16.0]
+        })
 
         # Read image bytes
         image_bytes = await image.read()
 
         # 2 & 3. Run YOLO and Yield Model in Parallel
         yolo_task = asyncio.create_task(run_yolo_diagnosis(image_bytes))
-        yield_task = asyncio.create_task(run_yield_prediction(meta.model_dump()))
+        yield_task = asyncio.create_task(run_yield_prediction(meta_dict))
         
         # Await both to finish concurrently
         yolo_result, yield_result = await asyncio.gather(yolo_task, yield_task, return_exceptions=True)
@@ -159,33 +177,37 @@ async def orchestrate_advisory(
 
         # Extract Yield Baseline
         expected_yield_val = yield_result.get("pred_best_rmse_blend", "Unknown")
-        expected_yield_str = f"{expected_yield_val:.2f} t/ha" if isinstance(expected_yield_val, float) else expected_yield_val
+        expected_yield_str = f"{expected_yield_val:.2f} t/ha" if isinstance(expected_yield_val, (float, int)) else expected_yield_val
 
         # 4. Prepare payload for LLM Interpretation
         llm_input = {
-            "crop": meta.crop_type,
-            "growth_stage": meta.growth_stage,
-            "district": meta.district_std,
-            "season": meta.season,
+            "crop": "maize",
+            "growth_stage": growth_stage,
+            "district": district,
+            "season": season,
             "diagnosis": yolo_result.get("diagnosis", "unknown"),
             "confidence": yolo_result.get("confidence", 0),
-            "severity": yolo_result.get("severity", "unknown"),
+            "severity": yolo_result.get("severity", "medium"),
             "expected_yield": expected_yield_str,
-            "language": meta.language
+            "language": language
         }
         
         # Run LLM call
         llm_result = await get_llm_advisory(llm_input)
         
-        # 5. Final Aggregation
+        # 5. Final Aggregation (Mapped to match new app.js requirements)
         return {
             "status": "success",
-            "visual_diagnosis": yolo_result,
+            "detected_pest": yolo_result.get("diagnosis", "Unknown"),
+            "detection_confidence": yolo_result.get("confidence", 0),
+            "severity": yolo_result.get("severity", "medium"),
+            "yield_prediction": expected_yield_val if isinstance(expected_yield_val, (float, int)) else 0.0,
+            "advisory": llm_result.get("advisory", "No advisory available."),
+            "visual_diagnosis": yolo_result, # Keep for backward compatibility/annotated images
             "environmental_context": {
-                "district": meta.district_std,
-                "season": meta.season,
-                "expected_yield_baseline": expected_yield_str,
-                "is_error": isinstance(yield_result, Exception) or "Error" in str(expected_yield_val)
+                "district": district,
+                "season": season,
+                "expected_yield_baseline": expected_yield_str
             },
             "expert_advisory": llm_result
         }

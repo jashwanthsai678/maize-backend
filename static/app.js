@@ -71,114 +71,101 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Form Submission Logic ---
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        if (!selectedFile) return;
-
-        // UI Loading state
-        submitBtn.disabled = true;
-        btnText.style.display = 'none';
-        spinner.style.display = 'block';
         
-        emptyState.style.display = 'none';
-        resultsContent.style.display = 'none';
-
-        // Gather Metadata
-        const metadata = {
-            district_std: document.getElementById('district').value,
-            season: document.getElementById('season').value,
-            crop_year: parseInt(document.getElementById('crop_year').value),
-            area_ha: parseFloat(document.getElementById('area_ha').value),
-            crop_type: "maize",
-            growth_stage: document.getElementById('growth_stage').value,
-            language: document.getElementById('language').value,
-            ...weatherData // from index.html script tag
-        };
+        // UI State: Loading
+        submitBtn.disabled = true;
+        document.querySelector('.spinner').style.display = 'block';
+        document.querySelector('.btn-text').innerText = 'AI is thinking...';
 
         const formData = new FormData();
-        formData.append('image', selectedFile);
-        formData.append('metadata', JSON.stringify(metadata));
+        formData.append("image", document.getElementById('image-input').files[0]);
+        formData.append("district", document.getElementById('district').value);
+        formData.append("season", document.getElementById('season').value);
+        formData.append("crop_year", document.getElementById('crop_year').value);
+        formData.append("area_ha", document.getElementById('area_ha').value);
+        formData.append("growth_stage", document.getElementById('growth_stage').value);
+        formData.append("language", document.getElementById('language').value);
 
         try {
+            // We call our Render orchestrator, which then handles the cloud coordination
             const response = await fetch('/orchestrate', {
                 method: 'POST',
                 body: formData
             });
 
             const data = await response.json();
-            
+
             if (!response.ok) {
-                const errorMsg = data.detail || `Server error: ${response.status}`;
+                const errorMsg = data.detail || data.error || `Server error: ${response.status}`;
                 throw new Error(errorMsg);
             }
 
-            displayResults(data);
+            // Reveal the Results section
+            document.getElementById('empty-state').style.display = 'none';
+            document.getElementById('results-content').style.display = 'block';
+            
+            // Populate labels
+            document.getElementById('res-diagnosis').innerText = data.detected_pest;
+            document.getElementById('res-yield').innerText = (typeof data.yield_prediction === 'number') 
+                ? data.yield_prediction.toFixed(2) 
+                : (data.yield_prediction || "0.00");
+            
+            document.getElementById('res-advisory').innerHTML = `<p>${data.advisory}</p>`;
+            
+            // Update and Animate confidence bar
+            const rawConf = data.detection_confidence || 0;
+            const percentageNum = Math.round(rawConf <= 1 ? rawConf * 100 : rawConf);
+            const percentage = percentageNum + '%';
+            
+            document.getElementById('res-confidence-bar').style.width = '0%';
+            setTimeout(() => {
+                document.getElementById('res-confidence-bar').style.width = percentage;
+            }, 100);
+            document.getElementById('res-confidence-text').innerText = percentage;
 
-        } catch (error) {
-            console.error('Error:', error);
-            alert('Analysis Error: ' + error.message);
+            // Severity Badge (if provided)
+            const badge = document.getElementById('severity-badge');
+            if (data.severity) {
+                const sev = data.severity.toLowerCase();
+                badge.innerText = sev.charAt(0).toUpperCase() + sev.slice(1) + " Severity";
+                badge.className = `badge ${sev}`;
+            }
+
+            // Image Update (Annotated if available)
+            const img = document.getElementById('result-image');
+            if (data.visual_diagnosis && data.visual_diagnosis.annotated_image_base64) {
+                 img.src = `data:image/jpeg;base64,${data.visual_diagnosis.annotated_image_base64}`;
+            } else {
+                 img.src = imagePreview.src;
+            }
+
+            // District/Season labels
+            document.getElementById('res-district').innerText = document.getElementById('district').value;
+            document.getElementById('res-season').innerText = document.getElementById('season').value;
+
+        } catch (err) {
+            alert("Analysis Error: " + err.message);
+            console.error(err);
             emptyState.style.display = 'flex';
         } finally {
-            // Restore UI
             submitBtn.disabled = false;
-            btnText.style.display = 'block';
-            spinner.style.display = 'none';
+            document.querySelector('.spinner').style.display = 'none';
+            document.querySelector('.btn-text').innerText = 'Generate Advisory';
         }
     });
 
-    function displayResults(data) {
-        // Show results container
-        resultsContent.style.display = 'block';
-        
-        // 1. Visual Diagnosis
-        const diag = data.visual_diagnosis || {};
-        const diagStr = diag.diagnosis || "Unknown";
-        document.getElementById('res-diagnosis').innerText = diagStr;
-        
-        const confText = document.getElementById('res-confidence-text');
-        const confBar = document.getElementById('res-confidence-bar');
-        const confPercentage = Math.round((diag.confidence || 0) * 100);
-        confText.innerText = `${confPercentage}%`;
-        
-        // Animate progress bar
-        confBar.style.width = '0%';
-        setTimeout(() => {
-            confBar.style.width = `${confPercentage}%`;
-        }, 100);
-
-        const badge = document.getElementById('severity-badge');
-        const severity = (diag.severity || "low").toLowerCase();
-        badge.innerText = severity.charAt(0).toUpperCase() + severity.slice(1) + " Severity";
-        badge.className = `badge ${severity}`;
-
-        const img = document.getElementById('result-image');
-        if (diag.annotated_image_base64) {
-             img.src = `data:image/jpeg;base64,${diag.annotated_image_base64}`;
-        } else {
-             img.src = imagePreview.src;
+    // --- Image Preview Logic ---
+    imageInput.addEventListener('change', function(e) {
+        if (!this.files.length) return;
+        const reader = new FileReader();
+        reader.onload = function() {
+            imagePreview.src = reader.result;
+            imagePreview.style.display = 'block';
+            uploadContent.style.display = 'none';
+            uploadArea.style.padding = '0';
+            uploadArea.style.border = 'none';
+            submitBtn.disabled = false;
         }
-
-        // 2. Yield Projection
-        const env = data.environmental_context || {};
-        const yieldVal = env.expected_yield_baseline || "N/A";
-        document.getElementById('res-yield').innerText = yieldVal.replace(' t/ha', '');
-        document.getElementById('res-district').innerText = env.district || "Unknown";
-        document.getElementById('res-season').innerText = env.season || "Unknown";
-
-        // 3. Advisory text
-        const advisoryDiv = document.getElementById('res-advisory');
-        const expert = data.expert_advisory || {};
-        let advisoryText = expert.advisory || JSON.stringify(expert, null, 2);
-        
-        // Very simple markdown to html conversion for bold/lists if LLM returns markdown
-        advisoryText = advisoryText
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\n\n/g, '<br><br>')
-            .replace(/\n- /g, '<br>• ');
-
-        advisoryDiv.innerHTML = `<div class="advisory-text">${advisoryText}</div>`;
-        
-        // Scroll to results on mobile
-        if(window.innerWidth < 900) {
-            advisoryDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-    }
+        reader.readAsDataURL(e.target.files[0]);
+    });
 });
