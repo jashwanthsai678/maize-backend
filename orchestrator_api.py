@@ -6,221 +6,118 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="Advisory Orchestrator API", version="1.0.0")
+app = FastAPI(title="AgriSense Orchestrator")
 
+# Enable CORS for the frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Configuration from Environment ---
-# These should be set in your .env file locally or in the Render/Cloud environment settings.
-LLM_API_URL = os.getenv("LLM_API_URL")
-YOLO_API_URL = os.getenv("YOLO_API_URL")
-YIELD_API_URL = os.getenv("YIELD_API_URL")
+# --- VM Endpoints from .env ---
+# YOLO_API_URL should point to the VM that handles BOTH YOLO and Yield
+YOLO_YIELD_VM_URL = os.getenv("YOLO_API_URL") 
+LLM_VM_URL = os.getenv("LLM_API_URL")        
 
-# Basic check to warn if endpoints are missing
-if not all([LLM_API_URL, YOLO_API_URL, YIELD_API_URL]):
-    print("⚠️ WARNING: One or more API endpoints (LLM_API_URL, YOLO_API_URL, YIELD_API_URL) are NOT set!")
-    print("The application will likely fail during orchestration.")
+# Mount static files to serve the website
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def read_index():
     return FileResponse('static/index.html')
 
-# Mount static files (css, js)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-
-class YieldMetadata(BaseModel):
-    district_std: str
-    crop_year: int
-    season: str
-    area_ha: float
-    T2M: list[float]
-    T2M_MAX: list[float]
-    T2M_MIN: list[float]
-    PRECTOTCORR: list[float]
-    RH2M: list[float]
-    ALLSKY_SFC_SW_DWN: list[float]
-    # Extra user context for LLM
-    crop_type: str = "maize"
-    growth_stage: str = "vegetative"
-    language: str = "english"
-
-
-async def run_yolo_diagnosis(image_bytes: bytes) -> dict:
-    """Call the YOLO microservice."""
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            files = {"image": ("image.jpg", image_bytes, "image/jpeg")}
-            response = await client.post(YOLO_API_URL, files=files)
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        print(f"YOLO API Error: {e}")
-        return {
-            "diagnosis": "Error connecting to YOLO service",
-            "confidence": 0.0,
-            "severity": "unknown",
-            "annotated_image_base64": ""
-        }
-
-async def run_yield_prediction(payload: dict) -> dict:
-    """Call the Yield prediction microservice (now on cloud)."""
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(YIELD_API_URL, json=payload)
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        print(f"Yield API Error: {e}")
-        return {
-            "pred_best_rmse_blend": "Error computing yield"
-        }
-
-async def get_llm_advisory(payload: dict) -> dict:
-    """Call the LLM API on the cloud VM."""
-    print(f"\n--- LLM ADVISORY REQUEST ---")
-    print(f"URL: {LLM_API_URL}")
-    print(f"Payload: {json.dumps(payload, indent=2)}")
-    try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(LLM_API_URL, json=payload)
-            print(f"Response Status: {response.status_code}")
-            response.raise_for_status()
-            res_json = response.json()
-            print(f"Response JSON: {json.dumps(res_json, indent=2)}")
-            return res_json
-    except httpx.ConnectError:
-        err_msg = f"Connection Error: Could not reach {LLM_API_URL}. Check if the VM is running and firewall port 8000 is open."
-        print(f"!!! {err_msg}")
-        return {"advisory": err_msg, "error": "connection_failed"}
-    except httpx.HTTPStatusError as e:
-        err_msg = f"HTTP Error {e.response.status_code}: {e.response.text}. Check if the endpoint path is correct."
-        print(f"!!! {err_msg}")
-        return {"advisory": err_msg, "error": "http_error"}
-    except Exception as e:
-        err_msg = str(e)
-        print(f"!!! LLM Connectivity Error: {err_msg}")
-        # Provide a realistic fallback for the demo if the VM is down
-        return {
-            "advisory": "### 💡 Expert Advisory (Fallback Mode)\n\n"
-                        "We are currently experiencing a connection issue with the remote AI Advisor. "
-                        "However, based on the **YOLO Diagnosis** and **Yield Data** processed locally:\n\n"
-                        "- **Immediate Action**: Scrutinize the affected area and remove heavily infested leaves.\n"
-                        "- **Preventive**: Maintain soil health and monitor neighboring plots.\n"
-                        "- **Next Step**: Please check your VM firewall settings (Port 8000) to restore live AI advice.",
-            "error": err_msg
-        }
-
-
 @app.post("/orchestrate")
 async def orchestrate_advisory(
     image: UploadFile = File(...),
-    district: str = Form("Anugul"),
-    season: str = Form("Kharif"),
-    crop_year: int = Form(1997),
-    area_ha: float = Form(948.0),
-    growth_stage: str = Form("vegetative"),
-    language: str = Form("english"),
-    weather_json: str = Form("{}")
+    district: str = Form(...),
+    season: str = Form(...),
+    crop_year: int = Form(...),
+    area_ha: float = Form(...),
+    growth_stage: str = Form(...),
+    language: str = Form(...),
+    weather_json: str = Form("{}") # Received from app.js
 ):
     try:
-        # 1. Prepare Metadata for underlying services
-        meta_dict = {
-            "district_std": district,
-            "season": season,
-            "crop_year": crop_year,
-            "area_ha": area_ha,
-            "growth_stage": growth_stage,
-            "language": language,
-            "crop_type": "maize"
-        }
-        
-        # 1a. Merge Weather Data from Frontend
-        try:
-            weather = json.loads(weather_json)
-            meta_dict.update(weather)
-        except Exception as e:
-            print(f"Weather parsing warning: {e}")
-            # Fallback to snapshop if frontend data is corrupt/missing
-            meta_dict.update({
-                "T2M": [24.8, 25.0, 23.7, 24.1],
-                "T2M_MAX": [28.8, 29.1, 27.5, 28.2],
-                "T2M_MIN": [20.9, 21.3, 19.8, 20.0],
-                "PRECTOTCORR": [0.0, 0.0, 5.5, 12.0],
-                "RH2M": [83.1, 82.5, 84.0, 85.2],
-                "ALLSKY_SFC_SW_DWN": [16.5, 16.9, 15.8, 16.0]
-            })
-
-        # Read image bytes
+        # 1. Read Image
         image_bytes = await image.read()
+        
+        # Parse weather data (though not used directly in this specific VM1 call, we have it)
+        try:
+            weather_data = json.loads(weather_json)
+        except:
+            weather_data = {}
 
-        # 2 & 3. Run YOLO and Yield Model in Parallel
-        yolo_task = asyncio.create_task(run_yolo_diagnosis(image_bytes))
-        yield_task = asyncio.create_task(run_yield_prediction(meta_dict))
-        
-        # Await both to finish concurrently
-        yolo_result, yield_result = await asyncio.gather(yolo_task, yield_task, return_exceptions=True)
-        
-        # Check for errors in parallel execution
-        if isinstance(yolo_result, Exception):
-            print(f"YOLO Error: {yolo_result}")
-            yolo_result = {"diagnosis": "Error running YOLO", "confidence": 0, "severity": "unknown", "annotated_image_base64": ""}
-            
-        if isinstance(yield_result, Exception):
-            print(f"Yield Model Error: {yield_result}")
-            yield_result = {"pred_best_rmse_blend": "Error computing yield"}
-
-        # Extract Yield Baseline
-        expected_yield_val = yield_result.get("pred_best_rmse_blend", "Unknown")
-        expected_yield_str = f"{expected_yield_val:.2f} t/ha" if isinstance(expected_yield_val, (float, int)) else expected_yield_val
-
-        # 4. Prepare payload for LLM Interpretation
-        llm_input = {
-            "crop": "maize",
-            "growth_stage": growth_stage,
-            "district": district,
-            "season": season,
-            "diagnosis": yolo_result.get("diagnosis", "unknown"),
-            "confidence": yolo_result.get("confidence", 0),
-            "severity": yolo_result.get("severity", "medium"),
-            "expected_yield": expected_yield_str,
-            "language": language
-        }
-        
-        # Run LLM call
-        llm_result = await get_llm_advisory(llm_input)
-        
-        # 5. Final Aggregation (Mapped to match new app.js requirements)
-        return {
-            "status": "success",
-            "detected_pest": yolo_result.get("diagnosis", "Unknown"),
-            "detection_confidence": yolo_result.get("confidence", 0),
-            "severity": yolo_result.get("severity", "medium"),
-            "yield_prediction": expected_yield_val if isinstance(expected_yield_val, (float, int)) else 0.0,
-            "advisory": llm_result.get("advisory", "No advisory available."),
-            "visual_diagnosis": yolo_result, # Keep for backward compatibility/annotated images
-            "environmental_context": {
+        # 2. Call VM 1 (YOLO + Yield)
+        # We send the form data and image to the processing VM
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            vm1_files = {"image": (image.filename, image_bytes, image.content_type)}
+            vm1_data = {
                 "district": district,
                 "season": season,
-                "expected_yield_baseline": expected_yield_str
-            },
-            "expert_advisory": llm_result
+                "crop_year": str(crop_year),
+                "area_ha": str(area_ha),
+                "growth_stage": growth_stage,
+                "language": language,
+                "weather_json": weather_json
+            }
+            
+            # Requesting both Pest Detection and Yield from VM 1
+            vm1_resp = await client.post(YOLO_YIELD_VM_URL, data=vm1_data, files=vm1_files)
+            if vm1_resp.status_code != 200:
+                raise HTTPException(status_code=vm1_resp.status_code, detail=f"VM 1 Error: {vm1_resp.text}")
+            
+            vm1_result = vm1_resp.json()
+
+        # 3. Call VM 2 (Qwen LLM)
+        # Now we take the results from VM 1 and ask Qwen for an advisory
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            llm_payload = {
+                "crop": "Maize",
+                "growth_stage": growth_stage,
+                "district": district,
+                "season": season,
+                "diagnosis": vm1_result.get("detected_pest", "Healthy"),
+                "confidence": vm1_result.get("detection_confidence", 0.0),
+                "severity": vm1_result.get("severity", "Moderate"),
+                "expected_yield": f"{vm1_result.get('yield_prediction', 0):.2f} t/ha",
+                "language": language
+            }
+            
+            llm_resp = await client.post(LLM_VM_URL, json=llm_payload)
+            if llm_resp.status_code != 200:
+                 # Fallback advisory if LLM is down
+                 advisory_text = "Expert advisory is currently unavailable. Please check the diagnosis and yield results above."
+            else:
+                 llm_result = llm_resp.json()
+                 advisory_text = llm_result.get("advisory", "No advisory available.")
+
+        # 4. Final Aggregated Response to Website
+        return {
+            "detected_pest": vm1_result.get("detected_pest", "Unknown"),
+            "detection_confidence": vm1_result.get("detection_confidence", 0.0),
+            "yield_prediction": vm1_result.get("yield_prediction", 0.0),
+            "severity": vm1_result.get("severity", "Moderate"),
+            "advisory": advisory_text,
+            "visual_diagnosis": {
+                "annotated_image_base64": vm1_result.get("annotated_image_base64", ""),
+                "diagnosis": vm1_result.get("detected_pest", "Unknown"),
+                "confidence": vm1_result.get("detection_confidence", 0.0)
+            }
         }
-        
+
     except Exception as e:
+        print(f"Orchestration Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Use 8000 internally, Render will proxy via $PORT
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
