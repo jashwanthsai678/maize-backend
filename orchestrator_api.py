@@ -80,42 +80,16 @@ async def orchestrate_advisory(
         async with httpx.AsyncClient(timeout=120.0) as client:
             
             # -------------------------------------------------------------------
-            # STEP 1: VM 1 (YOLO & Yield prediction)
+            # STEP 1: BYPASS VM 1 (Because it is currently offline)
             # -------------------------------------------------------------------
-            logger.info(f"Sending request to VM 1: {YOLO_YIELD_VM_URL}")
-            vm1_data = {
-                "district": district,
-                "season": season,
-                "crop_year": str(crop_year),
-                "area_ha": str(area_ha),
-                "growth_stage": growth_stage,
-                "language": language,
-                "weather_json": weather_json
-            }
-            files = {"image": (image.filename, image_bytes, image.content_type)}
+            logger.info("Bypassing VM 1 as requested by user. Proceeding directly to VM 2.")
             
-            try:
-                resp1 = await client.post(YOLO_YIELD_VM_URL, data=vm1_data, files=files)
-            except Exception as e:
-                logger.error(f"Failed connecting to VM 1: {e}")
-                raise HTTPException(status_code=503, detail="VM 1 unreachable or timed out.")
-                
-            if resp1.status_code != 200:
-                logger.error(f"VM 1 Error ({resp1.status_code}): {resp1.text}")
-                raise HTTPException(status_code=resp1.status_code, detail=f"VM 1 Error: {resp1.text}")
-                
-            vm1_result = resp1.json()
-            logger.info("Successfully received response from VM 1.")
-            
-            detected_pest = vm1_result.get("detected_pest", "Unknown")
-            detection_confidence = vm1_result.get("detection_confidence", 0.0)
-            yield_prediction = vm1_result.get("yield_prediction", 0.0)
-            severity = vm1_result.get("severity", "Info")
+            # Since VM 1 is bypassed, we provide default/placeholder values that VM 2 expects
+            detected_pest = "Pending Visual Diagnosis"
+            detection_confidence = 100.0
+            yield_prediction = 0.0
+            severity = "Analysis Bypassed"
             annotated_image_base64 = ""
-            if "visual_diagnosis" in vm1_result:
-                annotated_image_base64 = vm1_result["visual_diagnosis"].get("annotated_image_base64", "")
-            elif "annotated_image_base64" in vm1_result:
-                 annotated_image_base64 = vm1_result["annotated_image_base64"]
 
             # -------------------------------------------------------------------
             # STEP 2: VM 2 (LLM Advisory)
