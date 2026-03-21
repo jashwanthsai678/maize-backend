@@ -4,6 +4,6 @@ httpx
 joblib
 pandas
 numpy
-scikit-learn
+scikit-learn==1.6.1
 python-dotenv
 pydantic
