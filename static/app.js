@@ -48,14 +48,13 @@ form.addEventListener('submit', async (e) => {
     formData.append("weather_json", JSON.stringify(window.weatherData));
 
     try {
-        // DIRECT CONNECTION to cloud VM as requested
-        // Note: This bypasses the Render orchestrator to fix connection issues.
-        const response = await fetch('http://34.14.178.187:8000/process_all', {
+        // We use the Render service as a PROXY to avoid CORS issues
+        const response = await fetch('/orchestrate', {
             method: 'POST',
             body: formData
         });
 
-        if (!response.ok) throw new Error('Cloud VM connection failed');
+        if (!response.ok) throw new Error('Proxy connection failed. Ensure Render is live.');
 
         const data = await response.json();
 
