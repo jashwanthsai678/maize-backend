@@ -112,7 +112,12 @@ form.addEventListener('submit', async (e) => {
 
     } catch (err) {
         console.error('Fetch Error:', err);
-        alert("Error connecting to the AI System. Please ensure the Render service is fully deployed and the Cloud VMs are running.");
+        let msg = "Error connecting to the AI System.";
+        if (err.message.includes("503")) msg += " (Cloud VM Unreachable - Check Firewall)";
+        else if (err.message.includes("504")) msg += " (VM Timeout - It took too long)";
+        else if (err.message.includes("failed")) msg += " (Network Issue)";
+        
+        alert(msg + "\n\nPlease ensure your Cloud VM is running and Port 8000 is open.");
     } finally {
         submitBtn.disabled = false;
         document.querySelector('.spinner').style.display = 'none';

@@ -2,16 +2,21 @@ import asyncio
 import json
 import os
 import httpx
+import time
+import logging
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 from dotenv import load_dotenv
+
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("AgriSense-Proxy")
 
 load_dotenv()
 
-app = FastAPI(title="AgriSense Orchestrator")
+app = FastAPI(title="AgriSense Orchestrator Proxy")
 
 # Enable CORS for the frontend
 app.add_middleware(
@@ -21,10 +26,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Cloud VM Endpoint ---
+# --- Cloud VM Endpoint (VM 1) ---
+# Should be http://34.14.178.187:8000/process_all
 YOLO_YIELD_VM_URL = os.getenv("YOLO_API_URL") 
 
-# Mount static files to serve the website
+# Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
@@ -42,12 +48,18 @@ async def orchestrate_advisory(
     language: str = Form(...),
     weather_json: str = Form("{}")
 ):
+    start_time = time.time()
+    logger.info(f"--- New Request Received ---")
+    logger.info(f"Target VM URL: {YOLO_YIELD_VM_URL}")
+    
     try:
-        # 1. Prepare data for the GCE VM
-        # We forward EXACTLY what the VM's /process_all expects
+        # 1. Read Image
         image_bytes = await image.read()
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        logger.info(f"Image received: {image.filename} ({len(image_bytes)} bytes)")
+
+        # 2. Forward to Cloud VM
+        # 120 second timeout to handle heavy processing
+        async with httpx.AsyncClient(timeout=120.0) as client:
             files = {"image": (image.filename, image_bytes, image.content_type)}
             data = {
                 "district": district,
@@ -59,24 +71,37 @@ async def orchestrate_advisory(
                 "weather_json": weather_json
             }
             
-            # Proxy the request to the Cloud VM1
-            # Using the URL from environment (e.g. http://34.14.178.187:8000/process_all)
-            print(f"Proxying request to: {YOLO_YIELD_VM_URL}")
-            resp = await client.post(YOLO_YIELD_VM_URL, data=data, files=files)
+            logger.info(f"Attempting to connect to VM...")
+            try:
+                resp = await client.post(YOLO_YIELD_VM_URL, data=data, files=files)
+            except httpx.ConnectError:
+                logger.error("CONNECTION ERROR: Cannot reach the Cloud VM IP. Check Firewall/Port 8000.")
+                raise HTTPException(status_code=503, detail="Cloud VM unreachable. Check Firewall/Port 8000.")
+            except httpx.TimeoutException:
+                logger.error("TIMEOUT ERROR: The VM took too long (>120s) to process the request.")
+                raise HTTPException(status_code=504, detail="VM Timeout. The processing took too long.")
+            
+            # Log the result
+            duration = time.time() - start_time
+            logger.info(f"VM responded in {duration:.2f}s with status {resp.status_code}")
             
             if resp.status_code != 200:
-                print(f"VM Error ({resp.status_code}): {resp.text}")
-                raise HTTPException(status_code=resp.status_code, detail=f"Cloud VM Error: {resp.text}")
+                logger.error(f"VM RETURNED ERROR: {resp.text}")
+                return {
+                    "error": "Cloud VM returned an error",
+                    "status_code": resp.status_code,
+                    "vm_message": resp.text
+                }
             
-            # Return the VM's response directly to the frontend
+            # Return result directly
             return resp.json()
 
     except Exception as e:
-        print(f"Proxy Orchestration Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"PROXY EXCEPTION: {str(e)}")
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(status_code=500, detail=f"Proxy Internal Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    # Use 8000 internally, Render will proxy via $PORT
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
