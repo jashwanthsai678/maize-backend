@@ -21,13 +21,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Configuration ---
-# Path to your VM instance endpoint for the LLM
-LLM_API_URL = os.getenv("LLM_API_URL", "http://34.69.210.248:8000/advisory")
+# --- Configuration from Environment ---
+# These should be set in your .env file locally or in the Render/Cloud environment settings.
+LLM_API_URL = os.getenv("LLM_API_URL")
+YOLO_API_URL = os.getenv("YOLO_API_URL")
+YIELD_API_URL = os.getenv("YIELD_API_URL")
 
-# Microservice endpoints
-YOLO_API_URL = os.getenv("YOLO_API_URL", "http://127.0.0.1:8002/predict")
-YIELD_API_URL = os.getenv("YIELD_API_URL", "http://127.0.0.1:8003/predict")
+# Basic check to warn if endpoints are missing
+if not all([LLM_API_URL, YOLO_API_URL, YIELD_API_URL]):
+    print("⚠️ WARNING: One or more API endpoints (LLM_API_URL, YOLO_API_URL, YIELD_API_URL) are NOT set!")
+    print("The application will likely fail during orchestration.")
 
 @app.get("/")
 async def read_index():
