@@ -8,7 +8,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
-from blended_predictor import predict_blended_yield
 
 load_dotenv()
 
@@ -73,15 +72,14 @@ async def run_yolo_diagnosis(image_bytes: bytes) -> dict:
         }
 
 async def run_yield_prediction(payload: dict) -> dict:
-    """Call the Yield prediction logic directly (consolidated)."""
+    """Call the Yield prediction microservice (now on cloud)."""
     try:
-        # Instead of an external HTTP call, we run the logic in-process
-        # Using to_thread if it's CPU intensive, or just calling it if it's fast enough.
-        # Since it's joblib/pandas, it's blocking, so we use to_thread.
-        preds = await asyncio.to_thread(predict_blended_yield, payload)
-        return preds
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(YIELD_API_URL, json=payload)
+            response.raise_for_status()
+            return response.json()
     except Exception as e:
-        print(f"Yield Prediction Error: {e}")
+        print(f"Yield API Error: {e}")
         return {
             "pred_best_rmse_blend": "Error computing yield"
         }
