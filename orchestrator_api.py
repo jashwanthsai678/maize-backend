@@ -27,8 +27,34 @@ app.add_middleware(
 )
 
 # --- Cloud VM Endpoint (VM 1) ---
-# Should be http://34.14.178.187:8000/process_all
-YOLO_YIELD_VM_URL = os.getenv("YOLO_API_URL") 
+# Sanitize URLs from .env to prevent hidden character errors
+YOLO_YIELD_VM_URL = (os.getenv("YOLO_API_URL") or "http://34.14.178.187:8000/process_all").strip()
+LLM_VM_URL = (os.getenv("LLM_API_URL") or "http://34.69.210.248:8000/advisory").strip()
+
+# --- Connectivity Test Endpoint ---
+@app.get("/test-vm")
+async def test_vm_connection():
+    """Diagnostic endpoint to see if Render can 'talk' to the VM"""
+    logger.info(f"Diagnosing connection to: {YOLO_YIELD_VM_URL}")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # We just try to access the base URL or docs to see if it's reachable
+            base_url = YOLO_YIELD_VM_URL.replace("/process_all", "")
+            resp = await client.get(base_url)
+            return {
+                "status": "success",
+                "message": f"Render can reach your VM!",
+                "vm_status_code": resp.status_code,
+                "target_url": YOLO_YIELD_VM_URL
+            }
+    except Exception as e:
+        logger.error(f"DIAGNOSTIC FAILURE: {e}")
+        return {
+            "status": "error",
+            "message": "Render is BLOCKED from reaching your VM. This is 100% a Firewall/Firewall Port 8000 issue on GCP.",
+            "error_detail": str(e),
+            "target_url": YOLO_YIELD_VM_URL
+        }
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
