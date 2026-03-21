@@ -1,9 +1,9 @@
 import asyncio
-import json
 import os
 import httpx
 import time
 import logging
+import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -72,68 +72,96 @@ async def orchestrate_advisory(
     weather_json: str = Form("{}")
 ):
     start_time = time.time()
-    logger.info(f"--- Direct Request to LLM VM at {LLM_VM_URL} ---")
+    logger.info("--- Starting VM1 -> VM2 Pipeline ---")
     
     try:
         image_bytes = await image.read()
         
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # We send JSON to the /advisory endpoint as expected
+            
+            # -------------------------------------------------------------------
+            # STEP 1: VM 1 (YOLO & Yield prediction)
+            # -------------------------------------------------------------------
+            logger.info(f"Sending request to VM 1: {YOLO_YIELD_VM_URL}")
+            vm1_data = {
+                "district": district,
+                "season": season,
+                "crop_year": str(crop_year),
+                "area_ha": str(area_ha),
+                "growth_stage": growth_stage,
+                "language": language,
+                "weather_json": weather_json
+            }
+            files = {"image": (image.filename, image_bytes, image.content_type)}
+            
+            try:
+                resp1 = await client.post(YOLO_YIELD_VM_URL, data=vm1_data, files=files)
+            except Exception as e:
+                logger.error(f"Failed connecting to VM 1: {e}")
+                raise HTTPException(status_code=503, detail="VM 1 unreachable or timed out.")
+                
+            if resp1.status_code != 200:
+                logger.error(f"VM 1 Error ({resp1.status_code}): {resp1.text}")
+                raise HTTPException(status_code=resp1.status_code, detail=f"VM 1 Error: {resp1.text}")
+                
+            vm1_result = resp1.json()
+            logger.info("Successfully received response from VM 1.")
+            
+            detected_pest = vm1_result.get("detected_pest", "Unknown")
+            detection_confidence = vm1_result.get("detection_confidence", 0.0)
+            yield_prediction = vm1_result.get("yield_prediction", 0.0)
+            severity = vm1_result.get("severity", "Info")
+            annotated_image_base64 = ""
+            if "visual_diagnosis" in vm1_result:
+                annotated_image_base64 = vm1_result["visual_diagnosis"].get("annotated_image_base64", "")
+            elif "annotated_image_base64" in vm1_result:
+                 annotated_image_base64 = vm1_result["annotated_image_base64"]
+
+            # -------------------------------------------------------------------
+            # STEP 2: VM 2 (LLM Advisory)
+            # -------------------------------------------------------------------
+            logger.info(f"Sending request to VM 2: {LLM_VM_URL}")
             llm_payload = {
                 "crop": "Maize",
                 "growth_stage": growth_stage,
                 "district": district,
                 "season": season,
-                "diagnosis": "Direct Advisory Request",
-                "confidence": 1.0,
-                "severity": "Info",
-                "expected_yield": "N/A",
-                "language": language
+                "diagnosis": str(detected_pest),
+                "confidence": float(detection_confidence),
+                "severity": str(severity),
+                "expected_yield": str(yield_prediction),
+                "language": str(language)
             }
             
             try:
-                resp = await client.post(LLM_VM_URL, json=llm_payload)
-            except httpx.ConnectError:
-                raise HTTPException(status_code=503, detail="Cloud VM unreachable. Check Firewall/Port 8000 on 34.10.208.65.")
-            except httpx.TimeoutException:
-                raise HTTPException(status_code=504, detail="VM Timeout. The processing took too long.")
+                resp2 = await client.post(LLM_VM_URL, json=llm_payload)
+            except Exception as e:
+                logger.error(f"Error connecting to VM 2: {e}")
+                raise HTTPException(status_code=503, detail="VM 2 unreachable or timed out.")
             
-            if resp.status_code == 422:
-                # If JSON fails, the user might have updated the endpoint to accept form data (image+metadata). Let's try it as fallback.
-                logger.warning("VM returned 422 for JSON. Falling back to Multipart Form Data.")
-                vm_data = {
-                    "district": district,
-                    "season": season,
-                    "crop_year": str(crop_year),
-                    "area_ha": str(area_ha),
-                    "growth_stage": growth_stage,
-                    "language": language,
-                    "weather_json": weather_json
-                }
-                files = {"image": (image.filename, image_bytes, image.content_type)}
-                resp = await client.post(LLM_VM_URL, data=vm_data, files=files)
+            if resp2.status_code != 200:
+                logger.error(f"VM 2 Error ({resp2.status_code}): {resp2.text}")
+                raise HTTPException(status_code=resp2.status_code, detail=f"VM 2 Error: {resp2.text}")
                 
-            if resp.status_code != 200:
-                logger.error(f"VM Error ({resp.status_code}): {resp.text}")
-                raise HTTPException(status_code=resp.status_code, detail=f"VM Error: {resp.text}")
+            vm2_result = resp2.json()
+            logger.info("Successfully received response from VM 2.")
             
-            llm_result = resp.json()
-            
-            # If the VM returns the full struct (detected_pest, yield_prediction), use it. Else fallback to defaults.
+            # Combine the results for the frontend presentation
             return {
-                "detected_pest": llm_result.get("detected_pest", "Direct Request"),
-                "detection_confidence": llm_result.get("detection_confidence", 100.0),
-                "yield_prediction": llm_result.get("yield_prediction", 0.0),
-                "severity": llm_result.get("severity", "Moderate"),
-                "advisory": llm_result.get("advisory", str(llm_result)),
+                "detected_pest": detected_pest,
+                "detection_confidence": detection_confidence,
+                "yield_prediction": yield_prediction,
+                "severity": severity,
+                "advisory": vm2_result.get("advisory", str(vm2_result)),
                 "visual_diagnosis": {
-                    "annotated_image_base64": llm_result.get("annotated_image_base64", ""),
+                    "annotated_image_base64": annotated_image_base64
                 }
             }
 
+    except HTTPException as e:
+        raise e
     except Exception as e:
         logger.error(f"ORCHESTRATION EXCEPTION: {str(e)}")
-        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=f"Orchestration Error: {str(e)}")
 
 if __name__ == "__main__":
